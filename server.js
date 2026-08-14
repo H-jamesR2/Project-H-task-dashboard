@@ -59,14 +59,19 @@ function saveAuthToDisk(authState) {
     fs.writeFileSync(AUTH_PATH, JSON.stringify(authState, null, 2), {
       mode: 0o600,
     });
+    console.log(`[auth] wrote ${AUTH_PATH} (${authState.cookies?.length ?? 0} cookies)`);
   } catch (err) {
-    console.warn(`[auth] failed to persist auth.json: ${err.message}`);
+    console.warn(`[auth] FAILED to persist auth.json: ${err.message}`);
   }
 }
 
 function deleteAuthFromDisk() {
   try {
-    if (fs.existsSync(AUTH_PATH)) fs.unlinkSync(AUTH_PATH);
+    if (fs.existsSync(AUTH_PATH)) {
+      fs.unlinkSync(AUTH_PATH);
+      console.warn(`[auth] DELETED ${AUTH_PATH}`);
+      console.trace("[auth] delete triggered from:");
+    }
   } catch (err) {
     console.warn(`[auth] failed to delete auth.json: ${err.message}`);
   }
@@ -206,8 +211,9 @@ function ensureSession(req, res, sessions) {
 }
 
 function getHelixProject() {
-  const fallbackUrl =
-    "https://ai.joinhandshake.com/fellow/projects/past/26a53071-8843-4138-97df-430bd3e4cd45";
+  const fallbackUrl = "https://ai.joinhandshake.com/fellow/d1c4646f-c15f-4261-84b6-a305524187c1/tasks";
+  //"https://ai.joinhandshake.com/fellow/projects/past/26a53071-8843-4138-97df-430bd3e4cd45";
+  //"https://ai.joinhandshake.com/fellow/d1c4646f-c15f-4261-84b6-a305524187c1/tasks";
   let projectUrl = fallbackUrl;
 
   if (fs.existsSync(CONFIG_PATH)) {
@@ -280,6 +286,8 @@ function createLoginManager(options = {}) {
         // The session cookie is set on the unauthenticated login page too,
         // so verify by actually hitting the API.
         const authState = await context.storageState();
+        console.log(JSON.stringify(storageState.origins, null, 2));
+
         try {
           await api.fetchProfile(authState);
         } catch {
@@ -438,6 +446,7 @@ function createAppServer(options = {}) {
           sessionId,
           body.startUrl || getHelixProject().projectUrl,
           (authState) => {
+            console.log(`[login] onAuthCaptured fired for session ${sessionId}`);
             sessions.setAuth(sessionId, authState);
             saveAuthToDisk(authState);
           }
@@ -447,7 +456,21 @@ function createAppServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/connect/save") {
-        const storageState = await loginManager.save(sessionId);
+        let storageState;
+        try {
+          storageState = await loginManager.save(sessionId);
+        } catch (err) {
+          // Auto-capture (tryCapture) may have already completed and cleaned
+          // up the flow before this request arrived — check for that first.
+          const existing = loadSession(sessions, sessionId);
+          if (existing?.authState) {
+            storageState = existing.authState;
+          } else {
+            sendJson(res, 401, { error: err.message });
+            return;
+          }
+        }
+
         let profile;
         try {
           profile = await api.fetchProfile(storageState);
@@ -494,10 +517,22 @@ function createAppServer(options = {}) {
           sendJson(res, 200, dashboard);
         } catch (err) {
           if (/expired|401|403/i.test(err.message)) {
-            sessions.clear(sessionId);
-            deleteAuthFromDisk();
-            sendJson(res, 401, { error: "Session expired. Sign in again." });
-            return;
+            // Don't trust this blindly — re-verify identity before nuking a
+            // freshly-saved session. A 403 here can mean "wrong project", not
+            // "your login is dead".
+            try {
+              await api.fetchProfile(session.authState);
+              // Identity is still fine — this was a project-scoping error, not an
+              // expired session. Don't delete auth.json.
+              sendJson(res, 403, { error: "Access denied for this project. Check project ID." });
+              return;
+            } catch {
+              // Identity check also fails now — session really is dead.
+              sessions.clear(sessionId);
+              deleteAuthFromDisk();
+              sendJson(res, 401, { error: "Session expired. Sign in again." });
+              return;
+            }
           }
           throw err;
         }
