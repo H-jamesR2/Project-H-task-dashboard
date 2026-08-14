@@ -228,8 +228,18 @@ async function fetchTrpc(procedure, input, storageState, options = {}) {
     break;
   }
 
+  // in fetchTrpc, inside platform-api.js
   if (response.status === 401 || response.status === 403) {
-    throw new Error("Login expired. Sign in again.");
+    let detail = "";
+    try {
+      const body = await response.json();
+      detail = body?.[0]?.error?.json?.message || JSON.stringify(body);
+    } catch {
+      detail = await response.text().catch(() => "");
+    }
+    console.warn(`[api] ${procedure} ${response.status}: ${detail}`);
+    console.warn(`[api] tasks ${response.status} headers:`, Object.fromEntries(response.headers.entries()));
+    throw new Error(`Login expired. Sign in again. (${detail})`);
   }
   if (response.status >= 502 && response.status <= 504) {
     throw new Error(
@@ -248,6 +258,10 @@ async function fetchTasksPage(projectUrl, storageState, limit, offset) {
   const apiUrl = buildTasksUrl(projectUrl, projectId, limit, offset);
   const cookieHeader = createCookieHeader(storageState, apiUrl);
 
+  console.log("[tasks] projectUrl:", projectUrl);
+  console.log("[tasks] projectId:", projectId);
+  console.log("[tasks] apiUrl:", apiUrl);
+
   if (!cookieHeader) {
     throw new Error("Session is not connected.");
   }
@@ -262,8 +276,18 @@ async function fetchTasksPage(projectUrl, storageState, limit, offset) {
     },
   });
 
+  // in fetchTasksPage, same pattern
   if (response.status === 401 || response.status === 403) {
-    throw new Error("Login expired. Sign in again.");
+    let detail = "";
+    try {
+      const body = await response.json();
+      detail = body?.[0]?.error?.json?.message || JSON.stringify(body);
+    } catch {
+      detail = await response.text().catch(() => "");
+    }
+    console.warn(`[api] task.listClaimedTasksForFellow ${response.status}: ${detail}`);
+    console.warn(`[api] tasks ${response.status} headers:`, Object.fromEntries(response.headers.entries()));
+    throw new Error(`Login expired. Sign in again. (${detail})`);
   }
   if (!response.ok) {
     throw new Error(`Tasks API failed with status ${response.status}.`);

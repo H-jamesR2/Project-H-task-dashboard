@@ -11,8 +11,10 @@ const {
   normalizeTask,
 } = require("./platform-api");
 
-const PROJECT_URL =
-  "https://ai.joinhandshake.com/fellow/projects/past/26a53071-8843-4138-97df-430bd3e4cd45";
+//const PROJECT_URL =
+//  "https://ai.joinhandshake.com/fellow/projects/past/26a53071-8843-4138-97df-430bd3e4cd45";
+//const PROJECT_URL = "https://ai.joinhandshake.com/fellow/d1c4646f-c15f-4261-84b6-a305524187c1/"
+const PROJECT_URL = "https://ai.joinhandshake.com/fellow/d1c4646f-c15f-4261-84b6-a305524187c1/tasks"
 const STORAGE = { cookies: [{ name: "s", value: "1", domain: "ai.joinhandshake.com", path: "/" }] };
 
 function tasksPayload(ids) {
