@@ -211,7 +211,7 @@ function ensureSession(req, res, sessions) {
 }
 
 function getHelixProject() {
-  const fallbackUrl = "https://ai.joinhandshake.com/fellow/d1c4646f-c15f-4261-84b6-a305524187c1/tasks";
+  const fallbackUrl = "https://ai.joinhandshake.com/fellow/projects/past/d1c4646f-c15f-4261-84b6-a305524187c1";
   //"https://ai.joinhandshake.com/fellow/projects/past/26a53071-8843-4138-97df-430bd3e4cd45";
   //"https://ai.joinhandshake.com/fellow/d1c4646f-c15f-4261-84b6-a305524187c1/tasks";
   let projectUrl = fallbackUrl;
@@ -264,6 +264,12 @@ function createLoginManager(options = {}) {
     const targetUrl = startUrl || getHelixProject().projectUrl;
     const targetOrigin = new URL(targetUrl).origin;
 
+    context.on("page", async (newPage) => {
+      if (newPage === page) return;
+      console.warn(`[login] unexpected tab opened: ${newPage.url()}`);
+      await newPage.close().catch(() => { });
+    });
+
     const flow = {
       loginSession,
       browser,
@@ -286,7 +292,7 @@ function createLoginManager(options = {}) {
         // The session cookie is set on the unauthenticated login page too,
         // so verify by actually hitting the API.
         const authState = await context.storageState();
-        console.log(JSON.stringify(storageState.origins, null, 2));
+        console.log(`[login] captured ${authState.cookies?.length ?? 0} cookies, ${authState.origins?.length ?? 0} origins`);
 
         try {
           await api.fetchProfile(authState);
@@ -302,11 +308,12 @@ function createLoginManager(options = {}) {
           flow.onFrameNavigated = null;
         }
         try {
-          onAuthCaptured?.(authState);
+          //onAuthCaptured?.(authState);
+          onAuthCaptured?.(authState, { browser, context, page });
         } catch (err) {
           console.warn(`[login] onAuthCaptured failed: ${err.message}`);
         }
-        await closeLoginSession(loginSession);
+        //await closeLoginSession(loginSession);
         flows.delete(sessionId);
       } catch {
         // browser or page closed mid-check
@@ -406,10 +413,26 @@ function loadSession(sessions, sessionId) {
   return session;
 }
 
+function createLivePageStore() {
+  const pages = new Map(); // sessionId -> { browser, context, page }
+
+  return {
+    set: (sessionId, entry) => pages.set(sessionId, entry),
+    get: (sessionId) => pages.get(sessionId) || null,
+    async close(sessionId) {
+      const entry = pages.get(sessionId);
+      if (!entry) return;
+      pages.delete(sessionId);
+      await entry.browser.close().catch(() => { });
+    },
+  };
+}
+
 function createAppServer(options = {}) {
   const api = options.api || handshakeApi;
   const sessions = options.sessions || createSessionStore();
   const loginManager = options.loginManager || createLoginManager();
+  const livePages = options.livePages || createLivePageStore();
 
   const sweepInterval = setInterval(() => sessions.sweep(), SESSION_SWEEP_MS);
   sweepInterval.unref?.();
@@ -445,10 +468,10 @@ function createAppServer(options = {}) {
         const result = await loginManager.start(
           sessionId,
           body.startUrl || getHelixProject().projectUrl,
-          (authState) => {
-            console.log(`[login] onAuthCaptured fired for session ${sessionId}`);
+          (authState, handles) => {
             sessions.setAuth(sessionId, authState);
             saveAuthToDisk(authState);
+            if (handles) livePages.set(sessionId, handles);
           }
         );
         sendJson(res, 200, result);
@@ -490,6 +513,7 @@ function createAppServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/logout") {
+        await livePages.close(sessionId);
         await loginManager.cancel(sessionId);
         sessions.clear(sessionId);
         deleteAuthFromDisk();
@@ -512,7 +536,10 @@ function createAppServer(options = {}) {
           const dashboard = await api.fetchDashboardForProject(
             body.projectInput || helixProject.projectUrl,
             session.authState,
-            { project: { id: helixProject.id, name: helixProject.name } }
+            {
+              project: { id: helixProject.id, name: helixProject.name },
+              page: livePages.get(sessionId)?.page,
+            }
           );
           sendJson(res, 200, dashboard);
         } catch (err) {

@@ -253,14 +253,45 @@ async function fetchTrpc(procedure, input, storageState, options = {}) {
   return extractTrpcJson(await response.json(), procedure);
 }
 
-async function fetchTasksPage(projectUrl, storageState, limit, offset) {
+async function runFetchInPage(page, url, init = {}) {
+  return page.evaluate(
+    async ({ url, init }) => {
+      const res = await fetch(url, { ...init, credentials: "include" });
+      const text = await res.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // non-JSON response; caller can inspect status/text
+      }
+      return { ok: res.ok, status: res.status, json, text };
+    },
+    { url, init }
+  );
+}
+
+async function fetchTasksPage(projectUrl, storageState, limit, offset, options = {}) {
   const projectId = getProjectId(projectUrl);
   const apiUrl = buildTasksUrl(projectUrl, projectId, limit, offset);
   const cookieHeader = createCookieHeader(storageState, apiUrl);
 
+  console.log(`[tasks] routing via ${options.page ? "live browser page" : "raw fetch"}`);
   console.log("[tasks] projectUrl:", projectUrl);
   console.log("[tasks] projectId:", projectId);
   console.log("[tasks] apiUrl:", apiUrl);
+
+  if (options.page) {
+    const result = await runFetchInPage(options.page, apiUrl, {
+      headers: { Referer: projectUrl },
+    });
+    if (result.status === 401 || result.status === 403) {
+      throw new Error("Login expired. Sign in again.");
+    }
+    if (!result.ok) {
+      throw new Error(`Tasks API failed with status ${result.status}.`);
+    }
+    return result.json;
+  }
 
   if (!cookieHeader) {
     throw new Error("Session is not connected.");
@@ -411,12 +442,13 @@ async function fetchTasksPageWithRetries(
   storageState,
   limit,
   offset,
-  retryDelays
+  retryDelays,
+  options
 ) {
   let lastError;
   for (let attempt = 0; attempt < TASKS_PAGE_RETRY_ATTEMPTS; attempt++) {
     try {
-      return await fetchPage(projectUrl, storageState, limit, offset);
+      return await fetchPage(projectUrl, storageState, limit, offset, options);
     } catch (err) {
       lastError = err;
       if (!isTasksPage500(err)) throw err;
@@ -435,7 +467,8 @@ async function fetchPageAdaptive(
   storageState,
   offset,
   preferredLimit,
-  retryDelays
+  retryDelays,
+  options
 ) {
   let limit = preferredLimit;
 
@@ -447,7 +480,8 @@ async function fetchPageAdaptive(
         storageState,
         limit,
         offset,
-        retryDelays
+        retryDelays,
+        options
       );
       const tasks = extractPage(payload);
       return { tasks, limitUsed: limit };
@@ -471,7 +505,7 @@ async function fetchPageAdaptive(
 async function fetchAllPaginated(
   projectUrl,
   storageState,
-  { pageSize, fetchPage, extractPage, retryDelays }
+  { pageSize, fetchPage, extractPage, retryDelays, options }
 ) {
   const tasks = [];
   let offset = 0;
@@ -487,7 +521,8 @@ async function fetchAllPaginated(
       storageState,
       offset,
       preferredLimit,
-      retryDelays
+      retryDelays,
+      options
     );
 
     if (pageTasks.length === 0) {
@@ -530,6 +565,7 @@ async function fetchAllTasks(projectInput, storageState, options = {}) {
     fetchPage,
     extractPage: extractTasks,
     retryDelays,
+    options
   });
 }
 
